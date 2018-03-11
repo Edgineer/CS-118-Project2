@@ -1,5 +1,16 @@
 //UDP client with reliable data transfer protocol
 
+struct TCP_PACKET {
+  int seq_num;
+  int ack_num;    
+  int window_size;
+  int ACK_flag;
+  int SYN_flag;
+  int FIN_flag;
+  int FILEFOUND_flag;
+  char data[996];
+};
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,11 +66,51 @@ int main(int argc, char *argv[]) {
 
   bzero(buf, PACKETSIZE);//clear receiving buffer
 
-  // send the message(filename) to the server
+  //Initiate establishing a connection, SYN Segment
+  struct TCP_PACKET synSegment;
+  synSegment.seq_num = 10;
+  synSegment.ack_num = 0;
+  synSegment.window_size = 5120;
+  synSegment.ACK_flag = 0;
+  synSegment.SYN_flag = 1;
+  synSegment.FIN_flag = 0;
+  synSegment.FILEFOUND_flag = 0;
+  bzero(synSegment.data,996);
+
+  //send the SYN Segment
   serverlen = sizeof(serveraddr);
-  n = sendto(sockfd, filename, strlen(filename), 0, &serveraddr, serverlen);
+  n = sendto(sockfd, &synSegment, sizeof(synSegment), 0, &serveraddr, serverlen);
   if (n < 0) 
-    error("ERROR in sendto");
+    error("ERROR in sendto for synSegment");
+
+  //receive SYNACK from the server
+  struct TCP_PACKET synackSegment;
+  n = recvfrom(sockfd, &synackSegment, PACKETSIZE, 0, &serveraddr, &serverlen);
+  if (n < 0) 
+    error("ERROR in recvfrom");
+  fprintf(stderr, "SYNACK segment received:\nSeq number:%d\nSYN flag:%d\nACK num:%d\n",synackSegment.seq_num,synackSegment.SYN_flag,synackSegment.ack_num);
+
+  //send the final SYN Segment
+  struct TCP_PACKET lastsynSegment;
+  lastsynSegment.seq_num = 11;
+  lastsynSegment.ack_num = synackSegment.seq_num+1;
+  lastsynSegment.window_size = 5120;
+  lastsynSegment.ACK_flag = 0;
+  lastsynSegment.SYN_flag = 0;
+  lastsynSegment.FIN_flag = 0;
+  lastsynSegment.FILEFOUND_flag = 0;
+  bzero(lastsynSegment.data,996);
+  strcpy(lastsynSegment.data, filename); // copy dir name   
+
+  //send the final SYN Segment with the filename
+  n = sendto(sockfd, &lastsynSegment, sizeof(lastsynSegment), 0, &serveraddr, serverlen);
+  if (n < 0) 
+    error("ERROR in sendto for synSegment");
+  
+//  // send the message(filename) to the server
+//  n = sendto(sockfd, filename, strlen(filename), 0, &serveraddr, serverlen);
+//  if (n < 0) 
+//    error("ERROR in sendto");
   
   //receive server response into buf
   n = recvfrom(sockfd, buf, PACKETSIZE, 0, &serveraddr, &serverlen);

@@ -1,5 +1,16 @@
 //UDP server with reliable data transfer protocol
 
+struct TCP_PACKET {
+  int seq_num;
+  int ack_num;    
+  int window_size;
+  int ACK_flag;
+  int SYN_flag;
+  int FIN_flag;
+  int FILEFOUND_flag;
+  char data[996];
+};
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -61,6 +72,36 @@ int main(int argc, char *argv[]) {
     error("ERROR on binding");
 
   clientlen = sizeof(clientaddr);
+  //Receive the SYN segment
+  struct TCP_PACKET synSegment;
+  n = recvfrom(sockfd, &synSegment, PACKETSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
+  if (n < 0)
+    error("ERROR in recvfrom");
+  fprintf(stderr, "SYN segment received:\nSeq number:%d\nSYN flag:%d\nACK flag:%d\n",synSegment.seq_num,synSegment.SYN_flag,synSegment.ack_num);
+
+  //SYNACK segment
+  struct TCP_PACKET synackSegment;
+  synackSegment.seq_num = 42;
+  synackSegment.ack_num = synSegment.seq_num+1;
+  synackSegment.window_size = 5120;
+  synackSegment.ACK_flag = 0;
+  synackSegment.SYN_flag = 1;
+  synackSegment.FIN_flag = 0;
+  synackSegment.FILEFOUND_flag = 0;
+  bzero(synackSegment.data,996);
+
+  //send the SYNACK Segment
+  n = sendto(sockfd, &synackSegment, sizeof(synackSegment), 0, &clientaddr, clientlen);
+  if (n < 0) 
+    error("ERROR in sendto for synSegment");
+
+  //Receive the last SYN segment
+  struct TCP_PACKET lastsynSegment;
+  n = recvfrom(sockfd, &lastsynSegment, PACKETSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
+  if (n < 0)
+    error("ERROR in recvfrom");
+  fprintf(stderr, "SYN segment received:\nSeq number:%d\nSYN flag:%d\nACK flag:%d\nData:%s\n",lastsynSegment.seq_num,lastsynSegment.SYN_flag,lastsynSegment.ack_num,lastsynSegment.data);
+
   while (1) {
 
     //receive a UDP datagram from a client
