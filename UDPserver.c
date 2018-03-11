@@ -73,6 +73,7 @@ int main(int argc, char *argv[]) {
     if (stat(buf, &fileStats) == 0) { //file found in the server's wd
      FILE *file = NULL;
      char filedata[PACKETSIZE];
+     bzero(filedata, PACKETSIZE);
      size_t bytesRead = 0;
      file = fopen(buf, "r");
      if (file != NULL) {
@@ -80,7 +81,8 @@ int main(int argc, char *argv[]) {
       // read up to sizeof(buffer) bytes
       while ((bytesRead = fread(filedata, 1, PACKETSIZE, file)) > 0) {
        n = sendto(sockfd, filedata, strlen(filedata), 0,(struct sockaddr *) &clientaddr, clientlen);
-       fprintf(stderr, "packets_sent:%d\n",packets_sent);
+       bzero(filedata, PACKETSIZE);
+       fprintf(stderr, "packets #%d sent, with %d bytes\n",packets_sent,n);
        packets_sent++;
        if (n < 0)
         error("ERROR in sendto");
