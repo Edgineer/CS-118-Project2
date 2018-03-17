@@ -259,7 +259,7 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "Before the data sending loop\n");
       int inloop = 1;
       while(!allACKed && !receivedFIN) {
-        if (numSentUnacked < 1) {
+        if (numSentUnacked < 5) {
           fprintf(stderr, "In the if %d\n",inloop);
           inloop++;  
           //create a data packet 
@@ -292,6 +292,7 @@ int main(int argc, char *argv[]) {
           if(pthread_create(&thread_arr[numThread],NULL,handlePacket,&checkPack)!=0){
             error("Error while creating threads!");
           }
+          pthread_join(thread_arr[numThread], NULL);
           numThread++;
           fprintf(stderr, "num thread after:%d\n",numThread);
         }                
