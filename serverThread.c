@@ -14,6 +14,13 @@ struct packet_check {
   int expectedACK;
 };
 
+struct packet_info {
+  struct TCP_PACKET datapacket;
+  int packetNumber;
+  int *expectedACKptr;
+  int *isACKedptr;
+};
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -27,6 +34,7 @@ struct packet_check {
 #include <signal.h>
 #include <poll.h>
 #include <time.h>
+#include <pthread.h>
 
 #define HEADERSIZE 24
 #define PACKETSIZE 1024
@@ -36,41 +44,95 @@ struct packet_check {
 #define RTO 500//ms
 
 int numTotalPackets = 1;
-int curWindow  = 0;
 int send_base = 42;
 int nextseqnum = 42;
-int curACKedPackets = 0;
 int numSentUnacked = 0;
+int receivedFIN = 0;
+int sockfd, clientlen; //client's address size
+struct sockaddr_in serveraddr, clientaddr;
 
 struct packet_check *tempPacketMap;
+struct packet_check *packetMap;
 
-//The server knows how many packets it needs to send and the bytes so can calculate final sequence number
-//send base and nextseqnum
-//establish connection and get the filename, the server now begins to send the packets with window size = 5,
-
-//create an structure to keep track of the packets that have been received (has packet number and has packet been received?)
-
-//Use threads to send the packets and time them, when the packet is arrived exit the thread function
-
-//on the poll acknowledge the structure
-
-//on another checking loop go through the packets structure loop if the send_base = the packet's sequence number and it has been ACK'd
-//then increase the send_base and also increase the number of packets sent or is all packets ACK'd then go to close connection mode
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 void error(char *msg) {
   perror(msg);
   exit(1);
 }
 
+//thread function
+void *handlePacket(void *arg) {
+  if(pthread_mutex_lock(&lock)!=0){error("Error aqcuiring lock!");}
+
+  struct packet_info *packet = (struct packet_info *) arg;
+  struct TCP_PACKET outPacket = packet->datapacket;
+  int numPacket = packet->packetNumber;
+  int *expectedACK = packet->expectedACKptr;
+  int *isACKed = packet->isACKedptr;
+
+  fprintf(stderr, "in the thread packet number is %d\n",numPacket);
+  
+  struct pollfd fdArr[1];
+  fdArr[0].fd = sockfd;
+  fdArr[0].events = (POLLIN);//POLLIN+POLLHUP+POLLERR
+
+  //send the packet
+  int n = sendto(sockfd, &outPacket, PACKETSIZE, 0,(struct sockaddr *) &clientaddr, clientlen);
+  if (n < 0) 
+    error("ERROR in sendto");
+  fprintf(stderr, "Sending packet %d %d %s\n",outPacket.seq_num,outPacket.window_size);
+  
+  time_t start_t;
+  time(&start_t);
+
+  //check for a FIN packet
+  fprintf(stderr, "initial ack value:%d, expectedACK is:%d\n",*isACKed,*expectedACK);
+  *isACKed = 1;
+  *expectedACK = outPacket.seq_num + HEADERSIZE + strlen(outPacket.data);
+  fprintf(stderr, "post ack value:%d, expectedACK is:%d\n",*isACKed,*expectedACK);
+  *isACKed = 0;
+
+  while(*isACKed == 0) {
+    time_t end_t;
+    time(&end_t);
+    if (difftime(end_t,start_t) > 0.5) { //retransmit the packet
+      n = sendto(sockfd, &outPacket, PACKETSIZE, 0,(struct sockaddr *) &clientaddr, clientlen);
+      if (n < 0)
+        error("ERROR in sendto");
+      fprintf(stderr, "Sending packet %d %d Retransmission\n",outPacket.seq_num,outPacket.window_size);
+      time(&start_t); 
+    }
+
+    //use poll to wait for a packet, Extract packet data
+    poll(fdArr,1,0);//0 is the length of the timeout
+    if (fdArr[0].revents & POLLIN) { //ACK arrived, read from the socket
+      struct TCP_PACKET ACK;
+      n = recvfrom(sockfd, &ACK, PACKETSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
+      if (n < 0)
+          error("ERROR in recvfrom ACK");
+      fprintf(stderr, "receiving ACK number is:%d expected ACK number is:%d\n",ACK.ack_num,*expectedACK);
+      if (ACK.ack_num == *expectedACK) {
+        *isACKed = 1;
+        send_base = ACK.ack_num;//will not set value correctly
+        fprintf(stderr, "Receiving packet %d\n",ACK.ack_num);
+      }
+      //if (ACK.FIN_flag==1) {receivedFIN = 1;}
+    }
+  }
+  numSentUnacked--;
+  if(pthread_mutex_unlock(&lock)!=0){error("Error releasing lock!");}
+  pthread_exit(NULL);
+}
+
 int main(int argc, char *argv[]) {
-  int sockfd, portno, clientlen; //client's address size
-  struct sockaddr_in serveraddr, clientaddr;
-  int n; /* message byte size */
+  int portno;
+  int n;
   struct stat fileStats;
 
-  struct hostent *hostp; /* client host info */
-  char *hostaddrp; /* dotted decimal host addr string */
-  int optval; /* flag value for setsockopt */
+  struct hostent *hostp;
+  char *hostaddrp;
+  int optval;
 
   if (argc != 2) {
     fprintf(stderr, "usage: %s < portnumber >\n", argv[0]);
@@ -83,11 +145,6 @@ int main(int argc, char *argv[]) {
   if (sockfd < 0) 
     error("ERROR opening socket");
 
-  /* setsockopt: Handy debugging trick that lets 
-   * us rerun the server immediately after we kill it; 
-   * otherwise we have to wait about 20 secs. 
-   * Eliminates "ERROR on binding: Address already in use" error. 
-   */
   optval = 1;
   setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(int));
 
@@ -105,7 +162,6 @@ int main(int argc, char *argv[]) {
  
   while (1) {
     numTotalPackets = 1;
-    curWindow  = 0;
     send_base = 42;
     nextseqnum = 42; //you sent out the SYNACK so nextseqnum by 1
 
@@ -177,27 +233,36 @@ int main(int argc, char *argv[]) {
       if (file == NULL)
         error("opening file to read");
 
-      //setup packetMap
-      struct packet_check *packetMap = realloc(tempPacketmap,sizeof(struct packet_check)*numTotalPackets);
+      //allocate packetMap
+      struct packet_check *packetMap = realloc(tempPacketMap,sizeof(struct packet_check)*numTotalPackets);
 
       //initialize packetMap 
-      int tmpSeqNum = nextseqnum;
       for (int i = 0; i < numTotalPackets; ++i) {
-        int expected = nextseqnum + (i*(PACKETSIZE-1))
+        int expected = nextseqnum + (i*(PACKETSIZE-1));
         if (i == numTotalPackets-1 && fileStats.st_size%(DATASIZE-1) != 0) {
           expected = nextseqnum + ((i-1)*(PACKETSIZE-1)) + (fileStats.st_size%(DATASIZE-1));
         }
         packetMap[i].isACKed = 0;
         packetMap[i].expectedACK = expected;
       }
-      
+
+      for (int i = 0; i < numTotalPackets; ++i) {
+        fprintf(stderr, "for packet %d expected ACK is:%d\n",i,packetMap[i].expectedACK);
+      }
+
+      //create thead array
+      pthread_t thread_arr[numTotalPackets];
+      int numThread = 0;
+
       int allACKed = 0;
-      //struct pollfd fdArr[1];
-      //fdArr[0].fd = sockfd;
-      //fdArr[0].events = (POLLIN);//POLLIN+POLLHUP+POLLERR   
-    
-      while(!allACKed){
-        if (numSentUnacked < 5) {
+      
+      fprintf(stderr, "Before the data sending loop\n");
+      int inloop = 1;
+      while(!allACKed && !receivedFIN) {
+        if (numSentUnacked < 1) {
+          fprintf(stderr, "In the if %d\n",inloop);
+          inloop++;  
+          //create a data packet 
           struct TCP_PACKET dataPacket;
           dataPacket.seq_num = nextseqnum;
           dataPacket.ack_num = lastsynSegment.seq_num + 1;
@@ -205,41 +270,41 @@ int main(int argc, char *argv[]) {
           bzero(dataPacket.data,DATASIZE);
         
           bytesRead = fread(filedata, 1, DATASIZE-1, file);
-          if (bytesRead<0) {error("ERROR reading from file");}
+          if (bytesRead < 0) {error("ERROR reading from file");}
           snprintf(dataPacket.data, bytesRead+1, "%s", filedata);
           bzero(filedata, DATASIZE);
           
+          //Create the struct parameter for thread function (packet_info)
+          struct packet_info checkPack;
+          checkPack.datapacket = dataPacket;
+          checkPack.packetNumber = numThread;
+          checkPack.expectedACKptr = &packetMap[numThread].expectedACK;
+          checkPack.isACKedptr = &packetMap[numThread].isACKed;
+
           nextseqnum += (HEADERSIZE + strlen(dataPacket.data));
           numSentUnacked++;
 
-          //MAKE A THREAD TO SEND THE PACKET OVER
+          fprintf(stderr, "num of sent Unack'ed:%d\n",numSentUnacked);
+            
+          fprintf(stderr, "num thread before:%d\n",numThread);
 
-          //n = sendto(sockfd, &dataPacket, PACKETSIZE, 0,(struct sockaddr *) &clientaddr, clientlen);
-          //if (n < 0) 
-            //error("ERROR in sendto");
-          //fprintf(stderr, "Sending packet %d %d %s\n",dataPacket.seq_num,dataPacket.window_size);
-        }
-        
-        /*  //use poll to wait for a packet, read the packet and create an ACK for it   
-        poll(fdArr,1,500);//500 is the length of the timeout
-      
-        if (fdArr[0].revents & POLLIN) { //ACK arrived, read from the socket
-          struct TCP_PACKET ACK;
-          n = recvfrom(sockfd, &ACK, PACKETSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
-          if (n < 0)
-            error("ERROR in recvfrom ACK");
-          if (ACK.ack_num == nextseqnum) {
-            send_base = nextseqnum;
-            curACKedPackets+=1;
-            fprintf(stderr, "Receiving packet %d\n",ACK.ack_num);
-            numSentUnacked--;
+          //MAKE A THREAD TO SEND THE PACKET OVER
+          if(pthread_create(&thread_arr[numThread],NULL,handlePacket,&checkPack)!=0){
+            error("Error while creating threads!");
           }
-          else {
-            fprintf(stderr, "Receiving packet %d (out of order)\n",ACK.ack_num);
-          }
+          numThread++;
+          fprintf(stderr, "num thread after:%d\n",numThread);
+        }                
+        //check all are not acked
+        int allArrived = 1;
+        for (int i = 0; i < numTotalPackets; ++i) {
+          if (packetMap[i].isACKed == 0) {allArrived = 0;}
         }
-        */
+        allACKed = allArrived;
+        //on another checking loop go through the packets structure loop if the send_base = the packet's sequence number and it has been ACK'd
+        //then increase the send_base and also increase the number of packets sent or is all packets ACK'd then go to close connection mode
       }
+    //set sendbase;
     fclose(file);
     free(packetMap);
   }

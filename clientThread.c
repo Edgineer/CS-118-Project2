@@ -139,6 +139,7 @@ int main(int argc, char *argv[]) {
     if ((totalNumBuytes%(999)!=0)) {numTotalPackets++;}
 
     int finalSeqNum = rcv_base + totalNumBuytes + (HEADERSIZE*numTotalPackets);
+    fprintf(stderr, "client thinks final sequence number is%d\n",finalSeqNum);
 
     file_path = (char*)calloc(strlen(filename)+15,sizeof(char)); // allocate for complete filepath including directory (should check the return value)
     snprintf(file_path,15,"%s",dir);//copy dir name
@@ -147,7 +148,7 @@ int main(int argc, char *argv[]) {
 
     //Initialize the Buffer
     for (int i = 0; i < 5; ++i) {
-      rcv_buffer[i].seq_num=-1;
+      rcv_buffer[i].seq_num = -1;
       bzero(rcv_buffer[i].data,DATA_SIZE);
     }
     
@@ -155,6 +156,8 @@ int main(int argc, char *argv[]) {
     fdArr[0].fd = sockfd;
     fdArr[0].events = (POLLIN);//POLLIN+POLLHUP+POLLERR
     
+    fprintf(stderr, "receiveBase:%d\n",rcv_base);
+
     while(rcv_base < finalSeqNum) { //indicating the last packet had full data packet, assuming at least one more packet left. Not gauranteed
       
       //look for a sequence number == rcv_base in the receiving buffer
@@ -199,7 +202,7 @@ int main(int argc, char *argv[]) {
               rcv_buffer[i].ack_num = packet.ack_num;
               //maybe add the other member variables
               bzero(rcv_buffer[i].data,DATA_SIZE);//Sure the data was already written to the file?
-              snprintf(rcv_buffer[i].data,strlen(packet.data),"%s",packet.data);
+              snprintf(rcv_buffer[i].data,strlen(packet.data)+1,"%s",packet.data);
               break;
             }
           }
